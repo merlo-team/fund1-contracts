@@ -216,9 +216,6 @@ git submodule update --init --recursive
 
 See `RUNBOOK.md` for `cast` command sequences (deposit, trade, redeem, fire exit).
 
-> ⚠️ Not audited. Fee-on-transfer/rebasing coins may misbehave; the balance checks still bound
-> each trade's loss to the quoted slippage.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
