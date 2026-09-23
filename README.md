@@ -30,6 +30,22 @@ Two paths, same product idea:
 
 Classic `Fund1` is never edited when a public fund ships. Different bytecode, different CREATE2 address, separate audit surface.
 
+```mermaid
+flowchart LR
+  subgraph Private["Private path"]
+    Owner -->|deposit / redeem at NAV| Fund1
+    Fund1 -->|mints / burns| SharePriv[Fund1Share]
+    Owner -->|trade book| Fund1
+  end
+  subgraph Public["Public path"]
+    Mgr[Manager] -->|deposit then goPublic| Fund1Public
+    Fund1Public -->|freezeSupply| SharePub[Fund1PublicShare]
+    Mgr -->|IFO seed| Pool[Uniswap v3 pool]
+    Pool --> Lock[LiquidityLock]
+    Buyer -->|buy / sell share| Pool
+  end
+```
+
 ## Contents
 
 - [What it is](#what-it-is)
@@ -90,6 +106,18 @@ zeroes its basis automatically — at a profit or at a loss — with no manual m
 So: deposit $10k → 1mm shares; invest $5k in coins → NAV still $10k (positions at cost), and
 0.5mm shares redeem exactly the $5k liquid; sell everything for $95k → NAV $95k, and the
 remaining 0.5mm shares redeem it all.
+
+```mermaid
+flowchart TD
+  USDG[USDG in] --> Deposit
+  Deposit["deposit ≈ amount × supply / NAV"] --> Mint[mint shares]
+  Mint --> OwnerWallet[Owner wallet]
+  OwnerWallet --> Redeem["redeem ≈ shares × NAV / supply"]
+  Redeem --> Burn[burn shares]
+  Burn --> USDGOut[USDG out]
+  Trade[trade USDG ↔ coin] --> Cost["cost[coin] ± notional"]
+  Cost --> NAV["NAV = liquid USDG + Σ cost"]
+```
 
 **Cost is not market value.** That's why mint/redeem are owner-only: an open NAV window priced
 at cost would be pure arbitrage against stale marks. Holders buy and sell the token on the
@@ -175,6 +203,24 @@ can't swap on its own pool from `trade`: the router would report the fund, not t
 
 A deposit is `router.execute(V4_SWAP: SETTLE, SWAP_EXACT_IN_SINGLE, TAKE_ALL)`:
 
+```mermaid
+sequenceDiagram
+  participant Owner
+  participant Router as Universal Router
+  participant PM as PoolManager
+  participant Fund as Fund1 (hook)
+
+  Owner->>Router: execute(V4_SWAP)
+  Router->>PM: SETTLE USDG
+  Router->>PM: swap
+  PM->>Fund: beforeSwap
+  Fund->>Fund: price shares at NAV
+  Fund->>PM: take USDG / settle shares
+  Fund-->>PM: BeforeSwapDelta(+in, −out)
+  Note over PM: curve skipped (amount → 0)
+  Router->>PM: TAKE_ALL shares → Owner
+```
+
 1. `SETTLE`: the router `sync`s USDG, pulls the owner's USDG through Permit2 into the
    PoolManager, and `settle`s — it is now credited `+in`.
 2. `SWAP_EXACT_IN_SINGLE`: the router calls `swap`. The PoolManager calls the fund's
@@ -204,6 +250,28 @@ is not edited — a private fund's audit surface never changes because a public 
 | **`Fund1PublicShare`** | `Fund1Share` plus a one-way `freezeSupply()` |
 | **`AssetRegistry`** | Protocol-owned list of coins a public fund may hold (one per chain) |
 | **`LiquidityLock`** | Holds the IFO position NFT behind the same 72h notice |
+
+```mermaid
+flowchart TD
+  Deploy[Deploy Fund1Public] --> Deposit[Deposit USDG / mint shares]
+  Deposit --> GoPublic["goPublic() — freeze supply"]
+  GoPublic --> Seed[Seed Uniswap v3 share/USDG]
+  Seed --> Extend[Extend pool oracle]
+  Extend --> LockNFT[Transfer position NFT → LiquidityLock]
+  LockNFT --> List[Register listing]
+  List --> Feed[Appears on fund1 Invest]
+  Buyer[Buyer] -->|swap USDG ↔ share| Seed
+```
+
+```mermaid
+flowchart LR
+  Announce["announceExit(callHash)"] --> Wait["72h delay"]
+  Wait --> Window["7-day execute window"]
+  Window --> Exact["_consumeExit: keccak256(msg.data) == callHash"]
+  Exact --> Sweep["withdraw / withdrawAll / burn"]
+  Announce -.->|cancel anytime| Cancel[cancelExit]
+  TradeBlocked["trade blocked while pending"] -.-> Announce
+```
 
 What changed, and the specific attack each one closes:
 
