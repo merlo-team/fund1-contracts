@@ -1,62 +1,79 @@
 <div align="center">
-  <img src="https://fund1.io/logo.png" alt="fund1" width="88" height="88" />
+  <img src="assets/logo.png" alt="fund1" width="96" height="96" />
 
-  # fund1 contracts
+  # fund1
 
-  **Tokenized single-owner funds on Robinhood Chain.**
+  **Tokenized single-manager funds on Robinhood Chain.**
   <br />
-  One share token *is* the fund — no vault wrapper, no oracle, no separate deposit contract.
+  One share token *is* the fund — no vault wrapper, no oracle, no governance.
 
-  [![CI](https://github.com/merlo-team/fund1-contracts/actions/workflows/test.yml/badge.svg)](https://github.com/merlo-team/fund1-contracts/actions/workflows/test.yml)
-  [![Solidity](https://img.shields.io/badge/solidity-0.8.26-1c2029?style=flat-square)](src/Fund1.sol)
-  [![Foundry](https://img.shields.io/badge/built%20with-Foundry-1c2029?style=flat-square)](foundry.toml)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-EBB73F?style=flat-square)](LICENSE)
+  [![Solidity](https://img.shields.io/badge/solidity-0.8.26-1c2029?style=flat-square)](src)
+  [![Foundry](https://img.shields.io/badge/built%20with-Foundry-1c2029?style=flat-square)](https://getfoundry.sh)
   [![Uniswap v4](https://img.shields.io/badge/uniswap-v4%20hook-1c2029?style=flat-square)](src/Fund1.sol)
   [![Chain](https://img.shields.io/badge/chain-Robinhood%20Chain-EBB73F?style=flat-square)](https://docs.robinhood.com/chain/)
-  [![License: MIT](https://img.shields.io/badge/license-MIT-1c2029?style=flat-square)](LICENSE)
 
-  [fund1.io](https://fund1.io) · [Docs](https://fund1.io/docs) · [X / Twitter](https://x.com/fund1io)
+  [fund1.io](https://fund1.io) · [X / Twitter](https://x.com/fund1io) · [Docs](https://fund1.io/docs) · [MCP](https://www.npmjs.com/package/@fund1/mcp)
 </div>
 
 <br />
 
-> This is the open-source contracts repo — just `Fund1` and `Fund1Share`, the two contracts that
-> make up the protocol. The live product (client, server, MCP agent tooling) lives in a
-> separate, private repo; this one exists so the protocol itself is independently readable,
-> buildable, and testable by anyone.
+Two paths, same product idea:
+
+| | Private — `Fund1` | Public — `Fund1Public` |
+|---|---|---|
+| Who mints / redeems | Owner only, at book NAV | Nobody, after `goPublic()` |
+| Who trades the book | Owner | Owner (allowlisted venues + coins) |
+| Who holds exposure | Anyone holding the share ERC-20 | Same — buy/sell on a Uniswap pool |
+| Asset sweeps | Instant | 72h notice, exact-callhash commitment |
+| Liquidity | Optional | IFO position held in `LiquidityLock` |
+
+Classic `Fund1` is never edited when a public fund ships. Different bytecode, different CREATE2 address, separate audit surface.
 
 ## Contents
 
 - [What it is](#what-it-is)
-- [How shares are priced (oracle-free)](#how-shares-are-priced-oracle-free)
-- [Interface](#interface)
-- [The v4 hook, mechanically](#the-v4-hook-mechanically)
+- [Contracts in this repo](#contracts-in-this-repo)
+- [How shares are priced](#how-shares-are-priced-oracle-free)
+- [Private fund interface](#private-fund-interface)
+- [The v4 hook](#the-v4-hook-mechanically)
+- [Public funds](#public-funds-fund1public)
 - [Network / addresses](#network--addresses-robinhood-chain-mainnet-chain-id-4663)
 - [Build / test / deploy](#build--test--deploy)
 
 ## What it is
 
-A tokenized single-manager fund for Robinhood Chain, in two contracts. The fund deploys the
-share token:
+A **solmate** ERC-20 that *is* the fund's share token. The fund deploys it, is its only minter, and (for private funds) is also a Uniswap v4 hook that prices deposits and redemptions at NAV.
 
-- **`Fund1`** — the manager, the share token's `minter`, **and a Uniswap v4 hook**. It
-  initializes a USDG/share pool on the v4 PoolManager hooked by itself. The pool admits exactly
-  one kind of swap: the owner's, sent through **Uniswap's Universal Router** like any other v4
-  swap on the chain. The fund's `beforeSwap` is the only place shares are ever minted or burned:
-  it prices them at NAV, takes the input the router paid in, pays the output back for the router
-  to take, and hands the whole swap amount to itself so the empty curve does nothing. The owner
-  trades the pot through the same router (v2/v3/v4, every pools.trade coin included).
-- **`Fund1Share`** — the share token. A plain 18-decimal ERC20 (solmate, so EIP-2612 permit
-  comes free) with exactly one addition: an immutable `minter` that alone can `mint`/`burn`.
-  No hooks, no pausing, no blacklist — it trades anywhere any ERC20 does.
+- Deploy a fund and set `owner` at construction — yourself, or another wallet. The deployer is irrelevant.
+- `deposit`, `redeem`, `trade`, and withdraw are owner-only on the private path. NAV is cost basis, not marks.
+- Holding the fund shows **one** share token in a wallet, not the underlying stack sitting in the contract.
+- Optional public flow: freeze supply, seed a Uniswap market, lock the liquidity, list on [fund1 Invest](https://fund1.io/invest).
 
-There is no deposit or redeem function anywhere. A deposit **is** a swap — USDG → share on the
-fund's pool, one `V4_SWAP` command to the Universal Router — and a redeem is the same swap the
-other way. To anything reading the chain, the owner swapped tokens on Uniswap. Everyone else
-gets exposure by trading the share token itself, e.g. in an ordinary Uniswap pool against USDG.
-~260 lines of Solidity across the two, no oracle, no governance. The owner is a **constructor
-parameter** — the deployer is irrelevant, so anyone can deploy a fund on someone else's behalf.
-Every fund function is owner-only; the share token has no privileged functions besides
-mint/burn, which only the fund can call.
+There is no `deposit()` / `redeem()` function on the private path either. A deposit **is** a Uniswap swap — USDG → share on the fund's own v4 pool via the Universal Router — and a redeem is the same swap the other way. To anything reading the chain, the owner swapped tokens on Uniswap.
+
+## Contracts in this repo
+
+```
+src/
+├── Fund1.sol              Private fund + Uniswap v4 NAV hook
+├── Fund1Share.sol         Plain 18dp ERC-20, immutable minter
+├── Fund1Public.sol        Public fund (allowlists, goPublic, exit timelock)
+├── Fund1PublicShare.sol   Share token + one-way freezeSupply()
+├── AssetRegistry.sol      Protocol list of coins a public fund may hold
+└── LiquidityLock.sol      Holds the IFO position NFT behind 72h notice
+```
+
+| Contract | Role |
+|---|---|
+| **`Fund1`** | Manager, share minter, and v4 hook. Owner deposits/redeems at NAV through the Universal Router; trades the pot through any venue with code. |
+| **`Fund1Share`** | Share token. EIP-2612 permit. No pause, no blacklist. |
+| **`Fund1Public`** | Same idea with the changes a public float needs: venue allowlist, coin allowlist, `maxIn`, `goPublic()`, 72h exit timelock. |
+| **`Fund1PublicShare`** | `Fund1Share` plus one-way `freezeSupply()`. |
+| **`AssetRegistry`** | Curated (or open) list of assets every public fund may trade. Deploy once per chain behind a multisig. |
+| **`LiquidityLock`** | Locks the seeded Uniswap v3 position NFT. Fees anytime; principal needs the same 72h notice. |
+
+~260 lines for the private pair. The public path is larger because the protections are larger.
 
 ## How shares are priced (oracle-free)
 
@@ -80,10 +97,10 @@ market instead, where it's priced continuously. One accounting edge remains: a c
 never be sold (a rug) keeps its cost in NAV while held — `burn` or `withdrawAll` it and its
 basis is erased along with the tokens.
 
-## Interface
+## Private fund interface
 
 `Fund1Share` is the standard ERC20 surface plus `minter()`, `mint(to, amount)` and
-`burn(from, amount)` (the last two revert `"denied"` for anyone but the fund).
+`burn(from, amount)` (the last two revert `"not minter"` for anyone but the fund).
 
 **Deposit and redeem** are Universal Router transactions from the owner: `execute` with one
 `V4_SWAP` (`0x10`) command on the fund's pool (`poolKey()`) and three v4 actions —
@@ -114,18 +131,17 @@ and burning happen only in `beforeSwap`, only for a swap the router makes for th
   venue is whichever swap contract holds the liquidity: the Universal Router for v4 pools,
   SwapRouter02 for v3 pools. It is per-call because a chain wires only one of them to the
   pools that matter — on Robinhood **testnet** the Universal Router's v3 factory immutable
-  (`0x1f7d7550B1b028f7571E69A784071F0205FD2EfA`) holds no code, so every v3 pool address it
-  derives is empty and the swap reverts blank; the live stock pools sit under factory
-  `0xe138C58a8f5FB97A52bf17966Ad1c68bD4B52979`, reachable through SwapRouter02 at
-  `0xF3545700dbc70B8b3962FAf08039BdA2664b71C9`. Mainnet still routes v3 through the Universal
-  Router. Passing the venue per call is no extra trust — `trade` is owner-only and the owner
-  can already empty the fund with `withdrawAll` — and nothing the venue returns is believed:
-  the accounting is the fund's own before/after balances. A venue holding no code is rejected
-  (a plain call to one would silently succeed), and a venue's revert is re-thrown as-is so a
-  failed swap says why. `minOut` (**the only price check**) applies to the coin on buys, to
-  USDG on sells. Positions are plain ERC20s — for ETH exposure hold WETH; the fund never
-  touches native ETH, and the input token self-approves the venue on first use, both directly
-  and through Permit2.
+  (`0x1f7d7550…fd2efa`) holds no code, so every v3 pool address it derives is empty and the
+  swap reverts blank; the live stock pools sit under factory `0xe138C58a…B52979`, reachable
+  through SwapRouter02 at `0xF3545700dbc70B8b3962FAf08039BdA2664b71C9`. Mainnet still routes
+  v3 through the Universal Router. Passing the venue per call is no extra trust — `trade` is
+  owner-only and the owner can already empty the fund with `withdrawAll` — and nothing the
+  venue returns is believed: the accounting is the fund's own before/after balances. A venue
+  holding no code is rejected (a plain call to one would silently succeed), and a venue's
+  revert is re-thrown as-is so a failed swap says why. `minOut` (**the only price check**)
+  applies to the coin on buys, to USDG on sells. Positions are plain ERC20s — for ETH exposure
+  hold WETH; the fund never touches native ETH, and the input token self-approves the venue on
+  first use, both directly and through Permit2.
 - `withdraw(token)` — sweeps one token to the owner, erasing its cost from NAV, fund stays
   alive. For airdrops and retired positions (USDG only leaves via a redeem or `withdrawAll`).
 - `withdrawAll(tokens[])` — terminal fire exit; latches the fund dead (deposits and trades
@@ -174,6 +190,73 @@ A deposit is `router.execute(V4_SWAP: SETTLE, SWAP_EXACT_IN_SINGLE, TAKE_ALL)`:
 
 A redeem is the same the other way, with the shares burned in the middle.
 
+## Public funds (`Fund1Public`)
+
+`Fund1` above is the **private** path: its owner is the only holder that matters, so the owner
+being able to mint at book NAV and sweep the book instantly costs nobody but themselves. Put a
+public float on top of that and the same powers become the owner's most direct route into other
+people's money. So a fund meant to trade publicly is a **different contract**, and `Fund1.sol`
+is not edited — a private fund's audit surface never changes because a public one shipped.
+
+| Contract | What it adds |
+|---|---|
+| **`Fund1Public`** | Venue allowlist, coin allowlist, `maxIn`, `goPublic()`, 72h exit timelock |
+| **`Fund1PublicShare`** | `Fund1Share` plus a one-way `freezeSupply()` |
+| **`AssetRegistry`** | Protocol-owned list of coins a public fund may hold (one per chain) |
+| **`LiquidityLock`** | Holds the IFO position NFT behind the same 72h notice |
+
+What changed, and the specific attack each one closes:
+
+- **Venue allowlist.** `Fund1.trade` is `venue.call(data)` against any address with code — an
+  arbitrary-call primitive owned by a contract that is its own share token's minter. So
+  `trade(address(share), abi.encodeCall(mint, ...))` minted shares from nothing, and
+  `trade(address(usdg), abi.encodeCall(transfer, ...))` moved USDG out while `nav()` read
+  perfectly flat. Venues are now two immutables fixed at construction.
+- **Coin allowlist.** A venue allowlist alone still lets the owner route the whole book into a
+  worthless token they control, through a real router, at `minOut = 0` — a complete drain that
+  no timelock touches, because nothing leaves the fund. Every trade now requires
+  `registry.allowed(coin)`.
+- **`maxIn`.** `minOut` bounds only what comes back. What goes out was unbounded, so one call
+  to a bad venue could spend the entire USDG balance and still satisfy `minOut`.
+- **`goPublic()`** — one-way. Closes the NAV window and calls `share.freezeSupply()`. Supply is
+  then permanently fixed, so the owner can never again mint below true value or redeem above
+  it. They keep `trade`; they lose primary issuance, in both directions and for good.
+- **Exit timelock.** Once public, `withdraw` / `withdrawAll` / `burn` need a 72h announcement
+  committing to `keccak256` of the **exact** calldata, valid only between 72h and 7 days, single
+  use, and `trade` is frozen while one is pending.
+- **`LiquidityLock`.** Without it the timelock is theatre: the IFO position is the owner's own
+  NFT and they can pull all liquidity the minute they announce, leaving holders 72 hours of
+  notice and no market to sell into. Fees stay collectable at any time; touching the principal
+  takes the same wait.
+
+### What this still does not fix
+
+Stated here because a holder who finds them out later has been misled by omission:
+
+- **There is no redemption right, ever.** Supply is frozen, so nobody can exchange shares for
+  a slice of the assets. The only exit is selling into the pool.
+- **So this is a closed-end manager-run token, not an ETF.** Nothing arbitrages price towards
+  value; premium and discount are unbounded in both directions.
+- **`AssetRegistry` is centralisation.** Whoever owns it decides what every public fund may
+  hold, and a malicious entry re-opens the drain for all of them at once. Deploy it behind a
+  multisig with its own timelock.
+- **The 72h notice only helps if there is a bid.** It converts a silent rug into an orderly
+  stampede; early sellers still do far better than late ones.
+- **A manager can still lose the money legitimately** inside the allowlist. "Not stolen" is the
+  guarantee; "not lost" is not.
+- **Owner keys are immutable.** There is no transfer path, so a lost key means a listed fund
+  whose book can never be traded or swept again.
+- **The v4 NAV pool is bricked after `goPublic()`** — swaps revert there forever, but liquidity
+  adds were never gated, so a third party can still deposit into a pool they can never trade
+  out of. It is excluded from all indexing.
+
+Deploying the registry (once per chain, owner should be a multisig):
+
+```bash
+REGISTRY_OWNER=0xTheMultisig INITIAL_ASSETS=0xWETH,0xAAPL \
+  forge script script/DeployRegistry.s.sol --rpc-url robinhood --account deployer --broadcast
+```
+
 ## Network / addresses (Robinhood Chain mainnet, chain id 4663)
 
 | What | Value |
@@ -198,7 +281,8 @@ git clone --recurse-submodules https://github.com/merlo-team/fund1-contracts.git
 cd fund1-contracts
 
 forge build
-forge test --no-match-contract Fork   # 22 unit tests: mock router, REAL v4 PoolManager; incl. the full lifecycle
+forge test --no-match-contract Fork   # unit tests: mock router, REAL v4 PoolManager; incl. the full lifecycle
+                                      # (Fund1, Fund1Public, LiquidityLock)
 forge test --match-contract Fork      # LIVE e2e on a mainnet fork: real USDG, router and PoolManager —
                                       # deposit (router swap) -> invest -> realize -> redeem (router swap);
                                       # stranger and non-owner rejected. The public RPC serves only
@@ -208,14 +292,14 @@ OWNER=0xTheManager FUND_NAME="My Fund" FUND_SYMBOL=MYF \
   forge script script/Deploy.s.sol --rpc-url robinhood --account deployer --broadcast
 ```
 
-Cloned without `--recurse-submodules`? Pull the dependencies in separately:
+See `RUNBOOK.md` for cast command sequences.
 
-```bash
-git submodule update --init --recursive
-```
+---
 
-See `RUNBOOK.md` for `cast` command sequences (deposit, trade, redeem, fire exit).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+<div align="center">
+  <sub>
+    Built for <a href="https://fund1.io">fund1</a> ·
+    <a href="https://x.com/fund1io">@fund1io</a> ·
+    contracts by <a href="https://github.com/thejaildev">thejaildev</a>
+  </sub>
+</div>
